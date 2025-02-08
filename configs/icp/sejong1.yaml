@@ -1,0 +1,53 @@
+# 简介 & 备注
+# icp优化的参数文件，只需要数据集和训练参数
+
+# 数据集
+dataset:
+  - {
+    name: MulRan,
+    root: /root/dataset/MulRan_v4.0_NoVisual,
+    scenes: [ Sejong01 ],
+    reader: { type: npz },
+  }
+
+# 训练参数
+train:
+  auto_cast: false
+  log_cycle: 320
+  save_cycle: 1
+  # 第一阶段训练多尺度多来源配准
+  registration:
+    num_epochs: 7
+    batch_size: 1
+    distance: 20
+    fill: true
+    K_max: 32
+    map_size_max: 16
+    K_0: 2
+    K_mult: 2
+    mult_epoch: [2, 3, 4, 6]
+    optimizer:
+      type: AdamW
+      kwargs:
+        lr: 0.001
+        weight_decay: 0.0001
+    scheduler:
+      type: cosine
+      kwargs:
+        T_max: 6
+        eta_min: 0.00001
+  # 第二阶段训练回环检测
+  loop_detection:
+    num_epochs: 10
+    batch_size: 32
+    distance: 20
+    optimizer:
+      type: AdamW
+      kwargs:
+        lr: 0.001
+        weight_decay: 0.0001
+    scheduler:
+      type: cosine
+      kwargs:
+        T_max: 9
+        eta_min: 0.00001

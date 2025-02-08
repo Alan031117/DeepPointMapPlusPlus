@@ -1,0 +1,164 @@
+# 简介 & 备注
+# DeepPointMap++ v1.1b 消融实验
+
+# 基本参数，注：gpu_index use_ddp checkpoint 的非默认参数请在命令行直接传入
+name: DeepPointMap++  # 模型名称为 DeepPointMap
+version: v1.1b_ablation  # 模型版本
+num_workers: 8  # 用于数据加载的工作线程数
+use_cuda: true  # 启用CUDA加速（使用GPU进行计算）
+#weight: log_train/DeepPointMap++v1.1_3dataset_config=DeepPointMap++_increment.yaml/DeepPointMap++v1.1_3dataset.pth
+
+# 数据集
+dataset:
+  - {
+    name: KITTI,
+    root: /data/fengbh/data/fengbh/DPM-AAAI/dataset/KITTI,
+    scenes: ["00", "01", "02", "03", "04", "05", "06", "07"],
+    reader: { type: npz_ss, kwargs: { label_mapping:
+                                     { "40": 0, "44": 0, "48": 0, "49": 0, "50": 0, "51": 0, "52": 0, "60": 0, "70": 0,
+                                       "71": 0, "72": 0, "80": 0, "81": 0, "99": 0,
+                                        "0": 1, "1": 1, "10": 1, "11": 1, "13": 1, "15": 1, "16": 1, "18": 1, "20": 1,
+                                       "30": 1, "31": 1, "32": 1, "252": 1, "253": 1, "254": 1, "255": 1, "256": 1,
+                                       "257": 1, "258": 1, "259": 1 } } },
+  }
+
+# 训练参数
+train:
+  auto_cast: false  # 禁用自动类型转换（避免混合精度训练）
+  log_cycle: 320  # 每320步记录一次训练日志
+  save_cycle: 1  # 每次训练周期结束后保存模型
+  grad_norm: 35  # 梯度裁剪
+
+  # 第一阶段训练 点云配准
+  registration:
+    num_epochs: 7  # 配准阶段训练的总周期数为7
+    batch_size: 1  # 每个批次的样本数为1
+    distance: 20  # 配准时使用的最大距离为20
+    fill: true  # 是否填充数据
+
+    K_max: 32
+    map_size_max: 16
+    K_0: 2
+    K_mult: 2
+    mult_epoch: [2, 4, 6]  # 1: K=2; 2-3: K=4; 4-5: K=8; 6-7: K=16
+    optimizer:
+      type: AdamW  # 优化器类型为AdamW
+      kwargs:
+        lr: 0.0002
+        weight_decay: 0.0001
+    scheduler:
+      type: cosine  # 学习率调度器类型为余弦调度
+      kwargs:
+        T_max: 7  # 学习率周期的最大步数为
+        eta_min: 0.000002
+
+  # 第二阶段训练回环检测
+  loop_detection:
+    num_epochs: 10  # 回环检测阶段训练的总周期数为7
+    batch_size: 32  # 每个批次的样本数为32
+    distance: 20  # 回环检测时使用的最大距离为20
+    margin: 2  # 边界中央附近(间距18-22)不采样
+    optimizer:
+      type: AdamW  # 优化器类型为AdamW
+      kwargs:
+        lr: 0.001  # 学习率为0.001
+        weight_decay: 0.0001  # 权重衰减系数为0.0001
+    scheduler:
+      type: cosine  # 学习率调度器类型为余弦调度
+      kwargs:
+        T_max: 10  # 学习率周期的最大步数
+        eta_min: 0.00001  # 学习率的最小值为0.00001
+
+# 损失函数设置
+loss:
+  tau: 0.1  # 损失函数中的温度参数
+  offset_value: mahalanobis # 使用Mahalanobis距离计算偏移量（其他可选值：曼哈顿 | 欧几里得）
+  eps_positive: 1.0  # 正样本的epsilon参数值
+  eps_offset: 2.0  # 偏移量的epsilon参数值
+  lambda_p: 1.0  # 损失函数中正样本的权重系数
+  lambda_c: 0.1  # 损失函数中负样本的权重系数
+  lambda_o: 1.0  # 损失函数中偏移量的权重系数
+
+# 数据变换 [!注意! 以下变换为从上至下按顺序执行，部分变换与执行顺序存在耦合，例如ToTensor必须且只能位于最后]
+transforms:
+  RandomShuffle: { p: 1.0 }  # 随机打乱点云顺序，执行概率为1.0
+  VoxelSample: { voxel_size: 0.3, retention: first }  # 进行体素采样，体素尺寸为0.3，保留第一个点
+  DistanceSample: { min_dis: 1.0, max_dis: 60.0 }  # 根据距离进行采样，最小距离为1.0，最大距离为60.0
+  RandomDrop: { max_ratio: 0.5, p: 1.0 }  # 随机丢弃点，最大丢弃比例为0.5，执行概率为1.0
+  RandomShield: { angle_range: [10, 150], dis_range: [2, 10], max_num: 3, p: 0.1 }  # 随机屏蔽部分区域，角度范围为10到150度，距离范围为2到10，最多屏蔽3个区域，执行概率为0.1
+  RandomSample: { num: 16384 }  # 随机采样16384个点
+  RandomRT: { r_mean: 0, r_std: 3.1416, t_mean: 0, t_std: 0.1, p: 1.0, pair: false }  # 随机进行旋转和平移变换，旋转均值为0，标准差为3.1416，平移均值为0，标准差为3，执行概率为1.0，不对样本对进行操作
+  RandomPosJitter: { mean: 0, std: 0.005, p: 1.0 }  # 随机对点位置进行抖动，均值为0，标准差为0.005，执行概率为1.0
+  CoordinatesNormalization: { ratio: 60.0 }  # 对点云坐标进行归一化，归一化比例为60.0
+  ToTensor: { padding_to: 16384, use_calib: true,  use_label: true }  # 将点云数据转换为张量，填充到16384个点，并使用校准信息
+
+# 模型参数
+encoder:
+  npoint: [4096, 1024, 256, 64, 16]  # 设置多尺度点云采样点数
+  radius_list: [[0.05, 0.1], [0.1, 0.2], [0.2, 0.4, 0.4], [0.4, 0.8], [0.8, 1.6]]  # 不同尺度下的球形半径列表
+  nsample_list: [[32, 32], [32, 32], [32, 32, 32], [32, 32], [16, 16]]  # 不同尺度下的每个点的邻域采样点数
+  in_channel: 3  # 输入点云的通道数为3（通常是x, y, z坐标）
+  out_channel: 128  # 输出通道数为128
+  width: 16  # 网络的宽度系数
+  expansion: 4  # 通道扩展比例为4
+  upsample_layers: 2  # 上采样层数为2
+  sample:
+    [
+      { type: "fps-t3d" },  # 使用FPS（最远点采样）方法进行点采样
+      { type: "fps-t3d" },  # 使用FPS（最远点采样）方法进行点采样
+      { type: "fps-t3d" },  # 使用FPS（最远点采样）方法进行点采样
+      { type: "fps-t3d" },  # 使用FPS（最远点采样）方法进行点采样
+      { type: "fps-t3d" },  # 使用FPS（最远点采样）方法进行点采样
+    ]
+  norm: LN  # 使用Layer Normalization进行归一化
+  bias: True  # 使用偏置项
+
+decoder:
+  in_channel: 128  # 解码器的输入通道数为128
+  model_channel: 256  # 模型的通道数为256
+  attention_layers: 3  # 使用3层注意力机制
+
+label_decoder:
+  input_dim: 128
+  hidden_dim: 256
+  output_dim: 2
+  enable: True
+  replace_mask: False
+  use_HNM: False
+
+# SlamSystem
+slam_system:
+  # Overall
+  coor_scale: 60  # 坐标缩放比例为60
+
+  # Odometer
+  odometer_candidates_num: 1  # 里程计候选点数量为1
+  registration_sample_odometer: 0.5  # 里程计采样比例为0.5
+
+  # Mapping
+  edge_confidence_drop: 0.60  # 边缘置信度下降的阈值为0.60
+  edge_rmse_drop: 0.50  # 边缘RMSE下降的阈值为0.50
+  max_continuous_drop_scan: 5  # 最大连续丢弃扫描次数为5
+  continuous_drop_scan_strategy: recover  # 连续丢弃扫描的恢复策略为recover
+  key_frame_distance: auto  # 关键帧之间的距离设置为自动计算
+
+  enable_s2m_adjust: true # original: backend_loop_m2m_adjust # 启用S2M调整（原始配置为后端回环M2M调整）
+  registration_sample_mapping: 0.5  # 映射时的采样比例为0.5
+
+  # Loop
+  enable_loop_closure: true # original: backend_loop_closure # 启用回环闭合（原始配置为后端回环闭合）
+  loop_detection_gap: 0 # original: backend_loop_time_gap_min # 回环检测时间间隔为0（原始配置为最小后端回环时间间隔）
+  loop_detection_transaction_gap: 10.0  # 回环检测事务间隔为10.0
+  loop_detection_trust_range: 3 # original: LOOP_NEAREST_GRAPH_DIST # 回环检测可信范围为3（原始配置为回环最近图距离）
+  loop_detection_gnss_distance: -1 # original: LOOP_MAX_GPS_DIST_THRESHOLD_MAX # 回环检测的GNSS距离为-1（原始配置为最大GPS距离阈值）
+  loop_detection_pred_distance: 100.0 # original: backend_loop_pred_dist_max # 回环检测的预测距离为100.0（原始配置为最大预测距离）
+  loop_detection_rotation_min: 30.0 # original: backend_loop_pred_rot_min # 回环检测的最小旋转角度为30.0（原始配置为最小预测旋转角度）
+  loop_detection_translation_min: 10.0  # 回环检测的最小平移距离为10.0
+  loop_detection_prob_acpt_threshold: 0.7 # original: backend_loop_threshold # 回环检测的接受概率阈值为0.7（原始配置为回环阈值）
+  loop_detection_candidates_num: 1 # original: backend_loop_edge_per_scan # 回环检测的候选点数量为1（原始配置为每次扫描的回环边缘数量）
+  registration_sample_loop: 0.5  # 回环注册时的采样比例为0.5
+
+  loop_detection_confidence_acpt_threshold: 0.6 # original: LOOP_VERIFY_CONFIDENCE # 回环检测置信度接受阈值为0.6（原始配置为回环验证置信度）
+  enable_global_optimization: true  # 启用全局优化
+  global_optimization_gap: 0  # 全局优化间隔为0
+  # end
